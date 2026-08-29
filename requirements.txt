@@ -29,3 +29,4 @@ python-multipart
 pillow
 itsdangerous
 resend[async]
+jinja2

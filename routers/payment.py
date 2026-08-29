@@ -2,12 +2,13 @@ import hashlib
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 from sqlmodel import select
 
 from database import SessionDep
-from models import Payment, PaymentRead, User, WebhookEvent
+from models import Payment, PaymentRead, PaymentStatus, User, WebhookEvent
 from services.access_token import get_current_user
+from services.email import schedule_order_confirmation_email
 from services.payment_lifecycle import (
     apply_refund_event,
     apply_transaction_result,
@@ -37,6 +38,24 @@ def _get_owned_payment(
     return payment
 
 
+def _schedule_confirmation_if_newly_paid(
+    session: SessionDep,
+    *,
+    payment: Payment,
+    already_success: bool,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> None:
+    if already_success or payment.status != PaymentStatus.SUCCESS:
+        return
+    schedule_order_confirmation_email(
+        session,
+        order_id=payment.order_id,
+        image_base_url=str(request.base_url).rstrip("/"),
+        background_tasks=background_tasks,
+    )
+
+
 @router.post("/order/{order_id}/initialize", response_model=PaymentRead)
 def initialize_order_payment(
     order_id: UUID,
@@ -62,6 +81,8 @@ def initialize_order_payment(
 def verify_order_payment(
     payment_id: UUID,
     session: SessionDep,
+    request: Request,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
 ):
     payment = _get_owned_payment(
@@ -69,9 +90,17 @@ def verify_order_payment(
         payment_id=payment_id,
         user_id=current_user.id,
     )
+    already_success = payment.status == PaymentStatus.SUCCESS
     verify_payment(session, payment)
     session.commit()
     session.refresh(payment)
+    _schedule_confirmation_if_newly_paid(
+        session,
+        payment=payment,
+        already_success=already_success,
+        request=request,
+        background_tasks=background_tasks,
+    )
     return payment
 
 
@@ -79,6 +108,8 @@ def verify_order_payment(
 def verify_order_payment_by_reference(
     reference: str,
     session: SessionDep,
+    request: Request,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
 ):
     payment = session.exec(
@@ -91,9 +122,17 @@ def verify_order_payment_by_reference(
     ).first()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
+    already_success = payment.status == PaymentStatus.SUCCESS
     verify_payment(session, payment)
     session.commit()
     session.refresh(payment)
+    _schedule_confirmation_if_newly_paid(
+        session,
+        payment=payment,
+        already_success=already_success,
+        request=request,
+        background_tasks=background_tasks,
+    )
     return payment
 
 
@@ -101,6 +140,7 @@ def verify_order_payment_by_reference(
 async def paystack_webhook(
     request: Request,
     session: SessionDep,
+    background_tasks: BackgroundTasks,
     x_paystack_signature: str | None = Header(default=None),
 ):
     raw_body = await request.body()
@@ -126,6 +166,7 @@ async def paystack_webhook(
 
     event_type = payload.get("event", "")
     data = payload.get("data") or {}
+    newly_paid_payment: Payment | None = None
     if event_type in {"charge.success", "charge.failed"}:
         reference = data.get("reference")
         payment = session.exec(
@@ -136,7 +177,10 @@ async def paystack_webhook(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Payment is not ready for webhook processing",
             )
+        already_success = payment.status == PaymentStatus.SUCCESS
         apply_transaction_result(session, payment=payment, data=data)
+        if not already_success and payment.status == PaymentStatus.SUCCESS:
+            newly_paid_payment = payment
     elif event_type in {
         "refund.pending",
         "refund.processing",
@@ -162,4 +206,12 @@ async def paystack_webhook(
         )
     )
     session.commit()
+    if newly_paid_payment:
+        _schedule_confirmation_if_newly_paid(
+            session,
+            payment=newly_paid_payment,
+            already_success=False,
+            request=request,
+            background_tasks=background_tasks,
+        )
     return {"status": "ok"}

@@ -134,11 +134,7 @@ def create_order(
     order = session.exec(
         select(Order)
         .where(Order.id == order.id)
-        .options(
-            selectinload(Order.order_items).selectinload(OrderItem.product),
-            selectinload(Order.order_items).selectinload(OrderItem.product_variant),
-            selectinload(Order.user),
-        )
+        .options(*_ORDER_READ_OPTIONS)
     ).one()
     session.refresh(payment)
     return CheckoutRead(order=order, payment=payment)
