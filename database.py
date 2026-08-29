@@ -29,9 +29,11 @@ def _resolve_database_url() -> str:
 
 DATABASE_URL = _resolve_database_url()
 
+SQL_ECHO = os.getenv("SQL_ECHO", "false").lower() in ("1", "true", "yes")
+
 engine = create_engine(
     DATABASE_URL,
-    echo=True,
+    echo=SQL_ECHO,
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,
