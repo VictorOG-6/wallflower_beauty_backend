@@ -3,22 +3,14 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from sqlmodel import SQLModel
-from dotenv import load_dotenv
 from models import User, Product, Cart, Order, Review, RefreshToken, OrderItem, CartItem, ProductVariant
-import os
 
 from alembic import context
-
-load_dotenv()
+from database import DATABASE_URL
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set")
 
 config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
