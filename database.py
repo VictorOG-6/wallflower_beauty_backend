@@ -9,7 +9,7 @@ load_dotenv()
 
 
 def _normalize_database_url(url: str) -> str:
-    # Render/Heroku provide postgres://; SQLAlchemy expects postgresql://
+    # Railway/Heroku provide postgres://; SQLAlchemy expects postgresql://
     if url.startswith("postgres://"):
         return "postgresql://" + url[len("postgres://") :]
     return url
@@ -23,23 +23,26 @@ def _expand_env_vars(value: str) -> str:
 
 
 def _resolve_database_url() -> str:
-    url = os.getenv("DATABASE_URL")
-    if url:
-        url = _expand_env_vars(url.strip())
-        if url and "${" not in url:
-            return _normalize_database_url(url)
+    for env_var in ("DATABASE_PRIVATE_URL", "DATABASE_URL"):
+        url = os.getenv(env_var)
+        if url:
+            url = _expand_env_vars(url.strip())
+            if url and "${" not in url:
+                return _normalize_database_url(url)
 
-    user = os.getenv("POSTGRES_USER")
-    password = os.getenv("POSTGRES_PASSWORD")
-    host = os.getenv("POSTGRES_HOST", "localhost")
-    port = os.getenv("POSTGRES_PORT", "5432")
-    db = os.getenv("POSTGRES_DB")
+    user = os.getenv("PGUSER") or os.getenv("POSTGRES_USER")
+    password = os.getenv("PGPASSWORD") or os.getenv("POSTGRES_PASSWORD")
+    host = os.getenv("PGHOST") or os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("PGPORT") or os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("PGDATABASE") or os.getenv("POSTGRES_DB")
 
-    if host == "postgres" and not os.getenv("DATABASE_URL"):
+    if host == "postgres" and not any(
+        os.getenv(name) for name in ("DATABASE_URL", "DATABASE_PRIVATE_URL", "PGHOST")
+    ):
         raise RuntimeError(
             "POSTGRES_HOST is set to 'postgres' (a Docker Compose service name), "
-            "but DATABASE_URL is not configured. On Render, create/link a "
-            "PostgreSQL database and set DATABASE_URL from the Render dashboard."
+            "but no Railway database URL is configured. Add a PostgreSQL service "
+            "in Railway and link it to this service so DATABASE_URL is injected."
         )
 
     if not all([user, password, db]):
